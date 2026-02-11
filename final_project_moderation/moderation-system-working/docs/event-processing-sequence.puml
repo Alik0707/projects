@@ -1,0 +1,83 @@
+@startuml event-processing-sequence
+
+title Последовательность обработки события
+
+actor Producer
+participant "Topic-1" as topic1
+participant "Kafka\nConsumer" as consumer
+participant "Idempotency\nService" as idempotency
+participant "Redis" as redis
+participant "Moderation\nService" as moderation
+participant "Enrichment\nClient" as enrichmentClient
+participant "Service-2\nREST API" as service2
+participant "Rules\nEngine" as rules
+participant "Kafka\nProducer" as producer
+participant "Topic-2" as topic2
+
+Producer -> topic1: Publish CustomerRequestEvent
+
+topic1 -> consumer: Poll event
+activate consumer
+
+consumer -> idempotency: isEventProcessed(eventId)
+activate idempotency
+idempotency -> redis: EXISTS processed:event:{eventId}
+redis --> idempotency: false
+idempotency --> consumer: Not processed
+deactivate idempotency
+
+consumer -> idempotency: markEventAsProcessed(eventId)
+activate idempotency
+idempotency -> redis: SETNX processed:event:{eventId}\nTTL 24h
+redis --> idempotency: Success
+idempotency --> consumer: Marked
+deactivate idempotency
+
+consumer -> moderation: processRequest(event)
+activate moderation
+
+moderation -> enrichmentClient: getEnrichmentData(customerId)
+activate enrichmentClient
+
+enrichmentClient -> service2: GET /api/enrichment/{customerId}
+activate service2
+
+service2 -> redis: GET customer:info:{customerId}
+redis --> service2: Customer info
+
+service2 -> redis: KEYS customer:requests:{customerId}:*
+redis --> service2: Active requests
+
+service2 --> enrichmentClient: EnrichmentData
+deactivate service2
+
+enrichmentClient --> moderation: Enrichment data
+deactivate enrichmentClient
+
+moderation -> rules: applyModerationRules(event, enrichmentData)
+activate rules
+
+alt Customer is blocked
+    rules --> moderation: REJECTED (Customer blocked)
+else Has active request in same category
+    rules --> moderation: REJECTED (Active request exists)
+else Outside working hours
+    rules --> moderation: REJECTED (Outside working hours)
+else All rules passed
+    rules --> moderation: APPROVED
+    
+    moderation -> producer: publishModeratedEvent()
+    activate producer
+    producer -> topic2: Send ModeratedRequestEvent
+    producer --> moderation: Published
+    deactivate producer
+end
+
+deactivate rules
+moderation --> consumer: Completed
+deactivate moderation
+
+consumer -> topic1: Acknowledge offset
+deactivate consumer
+
+@enduml

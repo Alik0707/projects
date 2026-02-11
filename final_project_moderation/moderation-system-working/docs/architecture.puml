@@ -1,0 +1,89 @@
+@startuml moderation-system-architecture
+
+!define KAFKA #FF6B6B
+!define SERVICE #4ECDC4
+!define REDIS #FFE66D
+!define RULES #95E1D3
+
+skinparam backgroundColor white
+skinparam componentStyle rectangle
+
+title Система модерации обращений клиентов
+
+package "Event Processing" {
+    component "Topic-1\n(customer-requests)" as topic1 KAFKA
+    component "Topic-2\n(moderated-requests)" as topic2 KAFKA
+}
+
+package "Service-1: Moderation Service" as service1_pkg SERVICE {
+    component "Kafka\nConsumer" as consumer
+    component "Idempotency\nService" as idempotency
+    component "Moderation\nService" as moderation
+    component "Enrichment\nClient" as enrichmentClient
+    component "Rules\nEngine" as rules RULES
+    component "Kafka\nProducer" as producer
+    
+    consumer -down-> idempotency : check event
+    idempotency -down-> moderation : process
+    moderation -right-> enrichmentClient : get data
+    moderation -down-> rules : apply rules
+    rules -down-> producer : publish
+}
+
+package "Service-2: Enrichment Service" as service2_pkg SERVICE {
+    component "REST\nController" as controller
+    component "Enrichment\nService" as enrichmentService
+}
+
+database "Redis" as redis REDIS {
+    component "Customer Info" as customerInfo
+    component "Active Requests" as activeRequests
+    component "Processed Events" as processedEvents
+}
+
+' Connections
+topic1 -down-> consumer : consume events
+producer -up-> topic2 : publish approved
+enrichmentClient -right-> controller : HTTP GET
+controller -down-> enrichmentService
+enrichmentService -down-> redis
+idempotency -down-> processedEvents : SETNX
+
+note right of rules
+  **Moderation Rules:**
+  1. Идемпотентность
+  2. Активные обращения
+  3. Заблокированный клиент
+  4. Рабочее время
+end note
+
+note bottom of redis
+  **Redis Keys:**
+  - customer:info:{customerId}
+  - customer:requests:{customerId}:{requestId}
+  - processed:event:{eventId}
+end note
+
+note top of topic1
+  **Input Event:**
+  - eventId
+  - requestId
+  - customerId
+  - category
+  - priority
+  - description
+  - timestamp
+  - source
+end note
+
+note top of topic2
+  **Output Event:**
+  - All input fields
+  - customerTier
+  - preferredLanguage
+  - moderationStatus
+  - moderatedAt
+  - moderationReason
+end note
+
+@enduml
